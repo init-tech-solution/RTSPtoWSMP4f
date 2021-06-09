@@ -15,7 +15,7 @@ var (
 )
 
 func serveStreams() {
-	for k, v := range Config.Streams {
+	for k, v := range streamSvc.Streams {
 		if !v.OnDemand {
 			go RTSPWorkerLoop(k, v.URL, v.OnDemand)
 		}
@@ -23,32 +23,37 @@ func serveStreams() {
 }
 
 func RTSPWorkerLoop(name, url string, OnDemand bool) {
-	defer Config.RunUnlock(name)
+	defer streamSvc.RunUnlock(name)
 	for {
 		log.Println(name, "Stream Try Connect")
 		err := RTSPWorker(name, url, OnDemand)
 		if err != nil {
 			log.Println(err)
 		}
-		if OnDemand && !Config.HasViewer(name) {
+
+		if OnDemand && !streamSvc.HasViewer(name) {
 			log.Println(name, ErrorStreamExitNoViewer)
 			return
 		}
+
 		time.Sleep(1 * time.Second)
 	}
 }
 
-func RTSPWorker(name, url string, OnDemand bool) error {
+func RTSPWorker(suuid, url string, OnDemand bool) error {
 	keyTest := time.NewTimer(20 * time.Second)
 	clientTest := time.NewTimer(20 * time.Second)
+
 	RTSPClient, err := rtspv2.Dial(rtspv2.RTSPClientOptions{URL: url, DisableAudio: true, DialTimeout: 3 * time.Second, ReadWriteTimeout: 3 * time.Second, Debug: false})
 	if err != nil {
 		return err
 	}
 	defer RTSPClient.Close()
+
 	if RTSPClient.CodecData != nil {
-		Config.coAd(name, RTSPClient.CodecData)
+		streamSvc.addCodecToStreamByUUID(suuid, RTSPClient.CodecData)
 	}
+
 	var AudioOnly bool
 	if len(RTSPClient.CodecData) == 1 && RTSPClient.CodecData[0].Type().IsAudio() {
 		AudioOnly = true
@@ -58,25 +63,28 @@ func RTSPWorker(name, url string, OnDemand bool) error {
 	for {
 		select {
 		case <-clientTest.C:
-			if OnDemand && !Config.HasViewer(name) {
+			if OnDemand && !streamSvc.HasViewer(suuid) {
 				return ErrorStreamExitNoViewer
 			}
+
 		case <-keyTest.C:
 			return ErrorStreamExitNoVideoOnStream
+
 		case signals := <-RTSPClient.Signals:
 			switch signals {
 			case rtspv2.SignalCodecUpdate:
-				Config.coAd(name, RTSPClient.CodecData)
+				streamSvc.addCodecToStreamByUUID(suuid, RTSPClient.CodecData)
 				//MuxerNVR.CodecUpdate(RTSPClient.CodecData)
 			case rtspv2.SignalStreamRTPStop:
 				return ErrorStreamExitRtspDisconnect
 			}
+
 		case packetAV := <-RTSPClient.OutgoingPacketQueue:
 			if AudioOnly || packetAV.IsKeyFrame {
 				keyTest.Reset(20 * time.Second)
 			}
 			//MuxerNVR.WritePacket(packetAV)
-			Config.cast(name, *packetAV)
+			streamSvc.sendPacketDataToStream(suuid, *packetAV)
 		}
 	}
 }

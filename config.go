@@ -12,11 +12,11 @@ import (
 	"github.com/deepch/vdk/av"
 )
 
-//Config global
-var Config = loadConfig()
+//streamSvc global
+var streamSvc = loadStreamSvcByConfig()
 
-//ConfigST struct
-type ConfigST struct {
+//StreamSvc struct
+type StreamSvc struct {
 	mutex   sync.RWMutex
 	Server  ServerST            `json:"server"`
 	Streams map[string]StreamST `json:"streams"`
@@ -34,47 +34,48 @@ type StreamST struct {
 	OnDemand bool   `json:"on_demand"`
 	RunLock  bool   `json:"-"`
 	Codecs   []av.CodecData
-	Cl       map[string]viewer
+	Viewers  map[string]viewer
 }
 
 type viewer struct {
-	c chan av.Packet
+	packetChan chan av.Packet
 }
 
-func (element *ConfigST) RunIFNotRun(uuid string) {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	if tmp, ok := element.Streams[uuid]; ok {
+func (streamSvc *StreamSvc) RunIFNotRun(uuid string) {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+
+	if tmp, ok := streamSvc.Streams[uuid]; ok {
 		if tmp.OnDemand && !tmp.RunLock {
 			tmp.RunLock = true
-			element.Streams[uuid] = tmp
+			streamSvc.Streams[uuid] = tmp
 			go RTSPWorkerLoop(uuid, tmp.URL, tmp.OnDemand)
 		}
 	}
 }
 
-func (element *ConfigST) RunUnlock(uuid string) {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	if tmp, ok := element.Streams[uuid]; ok {
+func (streamSvc *StreamSvc) RunUnlock(uuid string) {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+	if tmp, ok := streamSvc.Streams[uuid]; ok {
 		if tmp.OnDemand && tmp.RunLock {
 			tmp.RunLock = false
-			element.Streams[uuid] = tmp
+			streamSvc.Streams[uuid] = tmp
 		}
 	}
 }
 
-func (element *ConfigST) HasViewer(uuid string) bool {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	if tmp, ok := element.Streams[uuid]; ok && len(tmp.Cl) > 0 {
+func (streamSvc *StreamSvc) HasViewer(uuid string) bool {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+	if tmp, ok := streamSvc.Streams[uuid]; ok && len(tmp.Viewers) > 0 {
 		return true
 	}
 	return false
 }
 
-func loadConfig() *ConfigST {
-	var tmp ConfigST
+func loadStreamSvcByConfig() *StreamSvc {
+	var tmp StreamSvc
 	data, err := ioutil.ReadFile("config.json")
 	if err != nil {
 		log.Fatalln(err)
@@ -84,42 +85,42 @@ func loadConfig() *ConfigST {
 		log.Fatalln(err)
 	}
 	for i, v := range tmp.Streams {
-		v.Cl = make(map[string]viewer)
+		v.Viewers = make(map[string]viewer)
 		tmp.Streams[i] = v
 	}
 	return &tmp
 }
 
-func (element *ConfigST) cast(uuid string, pck av.Packet) {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	for _, v := range element.Streams[uuid].Cl {
-		if len(v.c) < cap(v.c) {
-			v.c <- pck
+func (streamSvc *StreamSvc) sendPacketDataToStream(suuid string, packetData av.Packet) {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+	for _, v := range streamSvc.Streams[suuid].Viewers {
+		if len(v.packetChan) < cap(v.packetChan) {
+			v.packetChan <- packetData
 		}
 	}
 }
 
-func (element *ConfigST) ext(suuid string) bool {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	_, ok := element.Streams[suuid]
+func (streamSvc *StreamSvc) isStreamAvail(suuid string) bool {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+	_, ok := streamSvc.Streams[suuid]
 	return ok
 }
 
-func (element *ConfigST) coAd(suuid string, codecs []av.CodecData) {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	t := element.Streams[suuid]
+func (streamSvc *StreamSvc) addCodecToStreamByUUID(suuid string, codecs []av.CodecData) {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+	t := streamSvc.Streams[suuid]
 	t.Codecs = codecs
-	element.Streams[suuid] = t
+	streamSvc.Streams[suuid] = t
 }
 
-func (element *ConfigST) coGe(suuid string) []av.CodecData {
+func (streamSvc *StreamSvc) getStreamCodec(suuid string) []av.CodecData {
 	for i := 0; i < 100; i++ {
-		element.mutex.RLock()
-		tmp, ok := element.Streams[suuid]
-		element.mutex.RUnlock()
+		streamSvc.mutex.RLock()
+		tmp, ok := streamSvc.Streams[suuid]
+		streamSvc.mutex.RUnlock()
 		if !ok {
 			return nil
 		}
@@ -131,35 +132,32 @@ func (element *ConfigST) coGe(suuid string) []av.CodecData {
 	return nil
 }
 
-func (element *ConfigST) clAd(suuid string) (string, chan av.Packet) {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	cuuid := pseudoUUID()
+func (streamSvc *StreamSvc) clientRegisterStream(suuid string) (string, chan av.Packet) {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+	clientUUID := genClientUUID()
 	ch := make(chan av.Packet, 100)
-	element.Streams[suuid].Cl[cuuid] = viewer{c: ch}
-	return cuuid, ch
+	streamSvc.Streams[suuid].Viewers[clientUUID] = viewer{packetChan: ch}
+	return clientUUID, ch
 }
 
-func (element *ConfigST) list() (string, []string) {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
+func (streamSvc *StreamSvc) listStreamUUIDs() []string {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
 	var res []string
-	var fist string
-	for k := range element.Streams {
-		if fist == "" {
-			fist = k
-		}
+	for k := range streamSvc.Streams {
+
 		res = append(res, k)
 	}
-	return fist, res
+	return res
 }
-func (element *ConfigST) clDe(suuid, cuuid string) {
-	element.mutex.Lock()
-	defer element.mutex.Unlock()
-	delete(element.Streams[suuid].Cl, cuuid)
+func (streamSvc *StreamSvc) clientRemoveStream(suuid, cuuid string) {
+	streamSvc.mutex.Lock()
+	defer streamSvc.mutex.Unlock()
+	delete(streamSvc.Streams[suuid].Viewers, cuuid)
 }
 
-func pseudoUUID() (uuid string) {
+func genClientUUID() (uuid string) {
 	b := make([]byte, 16)
 	_, err := rand.Read(b)
 	if err != nil {
