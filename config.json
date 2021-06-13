@@ -5,7 +5,7 @@
   "streams": {
     "H264_AAC": {
       "on_demand": true,
-      "url": "rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mov"
+      "url": "rtsp://admin:tg12346789g@14.161.28.68:50242/Streaming/channels/101"
     },
     "MICRO": {
       "on_demand": true,

@@ -81,8 +81,9 @@ func ws(ws *websocket.Conn) {
 		log.Println("muxer.WriteHeader", err)
 		return
 	}
-	_, init := muxer.GetInit(codecs)
-	// meta, init := muxer.GetInit(codecs)
+	// _, init := muxer.GetInit(codecs)
+	meta, init := muxer.GetInit(codecs)
+	log.Println(meta)
 
 	// !TODO Send initial data
 	// err = websocket.Message.Send(ws, append([]byte{9}, meta...))
